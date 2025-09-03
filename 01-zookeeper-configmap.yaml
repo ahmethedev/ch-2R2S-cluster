@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zookeeper-config
+  namespace: zookeeper
+data:
+  zoo.cfg: |
+    tickTime=2000
+    initLimit=30
+    syncLimit=10
+    dataDir=/data
+    dataLogDir=/datalog
+    clientPort=2181
+    maxClientCnxns=60
+    autopurge.snapRetainCount=3
+    autopurge.purgeInterval=1
+    4lw.commands.whitelist=*
+    server.1=zookeeper-0.zookeeper-headless.zookeeper.svc.cluster.local:2888:3888
+    server.2=zookeeper-1.zookeeper-headless.zookeeper.svc.cluster.local:2888:3888
+    server.3=zookeeper-2.zookeeper-headless.zookeeper.svc.cluster.local:2888:3888

@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse-headless
+spec:
+  clusterIP: None
+  selector:
+    app: clickhouse-cluster
+  ports:
+  - port: 9000
+    name: native
+  - port: 8123
+    name: http
+  - port: 9009
+    name: interserver

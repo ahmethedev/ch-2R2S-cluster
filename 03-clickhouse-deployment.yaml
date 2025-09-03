@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: clickhouse-cluster
+spec:
+  serviceName: clickhouse-headless
+  replicas: 1  
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      app: clickhouse-cluster
+  template:
+    metadata:
+      labels:
+        app: clickhouse-cluster
+    spec:
+      initContainers:
+      - name: setup-config
+        image: busybox:1.35
+        command:
+        - sh
+        - -c
+        - |
+          set -ex
+          
+          # Get pod number
+          POD_NUM=$(echo $HOSTNAME | grep -o '[0-9]*$')
+          SHARD_ID=$(( POD_NUM / 2 + 1 ))
+          REPLICA_ID=$(( POD_NUM % 2 + 1 ))
+          
+          echo "Pod: $HOSTNAME, Shard: $SHARD_ID, Replica: $REPLICA_ID"
+          
+          # Write into env file
+          echo "SHARD_ID=$SHARD_ID" > /shared/env
+          echo "REPLICA_ID=$REPLICA_ID" >> /shared/env
+          
+          cat /shared/env
+        volumeMounts:
+        - name: shared-data
+          mountPath: /shared
+      
+      containers:
+      - name: clickhouse
+        image: clickhouse/clickhouse-server:23.12
+        ports:
+        - containerPort: 9000
+          name: native
+        - containerPort: 8123
+          name: http
+        - containerPort: 9009
+          name: interserver
+        
+        command:
+        - bash
+        - -c
+        - |
+          set -ex
+          
+          # Read environment variables
+          source /shared/env
+          export SHARD_ID
+          export REPLICA_ID
+          
+          echo "Starting ClickHouse with Shard: $SHARD_ID, Replica: $REPLICA_ID"
+          
+          # Start ClickHouse server
+          exec /entrypoint.sh
+        
+        env:
+        - name: CLICKHOUSE_DB
+          value: "default"
+        - name: CLICKHOUSE_USER
+          value: "default"
+        - name: CLICKHOUSE_PASSWORD
+          value: ""
+        
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/clickhouse
+        - name: config
+          mountPath: /etc/clickhouse-server/config.xml
+          subPath: config.xml
+          readOnly: true
+        - name: config
+          mountPath: /etc/clickhouse-server/users.xml
+          subPath: users.xml
+          readOnly: true
+        - name: shared-data
+          mountPath: /shared
+        
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+        
+        livenessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          httpGet:
+            path: /ping
+            port: 8123
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+     
+      volumes:
+      - name: config
+        configMap:
+          name: clickhouse-cluster-config
+      - name: shared-data
+        emptyDir: {}
+  
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "nfs-client"
+      resources:
+        requests:
+          storage: 100Gi

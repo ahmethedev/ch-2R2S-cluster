@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: zookeeper
+  namespace: zookeeper
+spec:
+  serviceName: zookeeper-headless
+  replicas: 1  
+  podManagementPolicy: OrderedReady  
+  selector:
+    matchLabels:
+      app: zookeeper
+  template:
+    metadata:
+      labels:
+        app: zookeeper
+    spec:
+      containers:
+      - name: zookeeper
+        image: zookeeper:3.8
+        ports:
+        - containerPort: 2181
+          name: client
+        - containerPort: 2888
+          name: follower
+        - containerPort: 3888
+          name: election
+        
+        env:
+        - name: ZOO_LOG4J_PROP
+          value: "INFO,CONSOLE"
+        
+        command:
+        - bash
+        - -c
+        - |
+          set -ex
+          
+          # Get pod number
+          POD_NUM=$(echo $HOSTNAME | grep -o '[0-9]*$')
+          ZK_ID=$((POD_NUM + 1))
+          echo "=== Starting ZooKeeper Server ID: $ZK_ID on $HOSTNAME ==="
+          
+          # Create directories
+          mkdir -p /data /datalog
+          
+          # Create myid file
+          echo $ZK_ID > /data/myid
+          echo "myid: $(cat /data/myid)"
+          
+          # Copy zoo.cfg 
+          cp /config-template/zoo.cfg /conf/zoo.cfg
+          echo "=== zoo.cfg content ==="
+          cat /conf/zoo.cfg
+          echo "======================="
+          
+          if [ $ZK_ID -eq 1 ]; then
+            echo "Starting first ZooKeeper node..."
+          else
+            echo "Starting additional ZooKeeper node..."
+            # Wait for other nodes' DNS
+            for i in $(seq 0 $((POD_NUM-1))); do
+              echo "Waiting for zookeeper-$i DNS resolution..."
+              until nslookup zookeeper-$i.zookeeper-headless.zookeeper.svc.cluster.local; do
+                echo "DNS not ready for zookeeper-$i, waiting..."
+                sleep 3
+              done
+              echo "zookeeper-$i DNS resolved"
+            done
+          fi
+          
+          echo "Starting ZooKeeper server..."
+          exec zkServer.sh start-foreground
+        
+        volumeMounts:
+        - name: data
+          mountPath: /data
+        - name: datalog
+          mountPath: /datalog
+        - name: config
+          mountPath: /config-template
+        
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+        
+        livenessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - |
+              set -e
+              result=$(echo "ruok" | nc localhost 2181 2>/dev/null || echo "failed")
+              if [ "$result" = "imok" ]; then
+                exit 0
+              else
+                echo "ZooKeeper health check failed: $result"
+                exit 1
+              fi
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        
+        readinessProbe:
+          exec:
+            command:
+            - bash
+            - -c
+            - |
+              set -e
+              result=$(echo "ruok" | nc localhost 2181 2>/dev/null || echo "failed")
+              if [ "$result" = "imok" ]; then
+                exit 0
+              else
+                echo "ZooKeeper readiness check failed: $result"
+                exit 1
+              fi
+          initialDelaySeconds: 15
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+     
+      volumes:
+      - name: config
+        configMap:
+          name: zookeeper-config
+  
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "nfs-client"
+      resources:
+        requests:
+          storage: 5Gi
+  - metadata:
+      name: datalog
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "nfs-client"
+      resources:
+        requests:
+          storage: 2Gi
